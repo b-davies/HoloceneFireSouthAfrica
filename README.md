@@ -8,7 +8,7 @@ Included in this repository are:
 -Data files associated with the code (DATA_SUPPLEMENT.zip)
 -Supplementary document with description of methods (Fire and Holocene landscapes of Southern AfricaSI_FINAL.pdf)
 
-# PLEASE NOTE: THIS STUDY MAKES USE OF PRE-EXISTING DATA. INCLUDED DATA TEMPLATES ONLY SHOW HOW DATA SHOULD BE STRUCTURED. PLEASE SEE ORIGINAL PUBLICATIONS/DATABASES FOR DATA.
+### PLEASE NOTE: THIS STUDY MAKES USE OF PRE-EXISTING DATA. INCLUDED DATA TEMPLATES ONLY SHOW HOW DATA SHOULD BE STRUCTURED. PLEASE SEE ORIGINAL PUBLICATIONS/DATABASES FOR DATA.
 -For SARD C14 data, https://c14.arch.ox.ac.uk/databases.html
 -For marine reservoir data, see http://calib.org/marine/ 
 -For paleoclimate data, see https://www.drbrianchase.com/data-and-software
