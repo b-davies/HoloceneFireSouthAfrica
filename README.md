@@ -9,7 +9,7 @@ Included in this repository are:
 -Supplementary document with description of methods (Fire and Holocene landscapes of Southern AfricaSI_FINAL.pdf)
 
 ### PLEASE NOTE: THIS STUDY MAKES USE OF PRE-EXISTING DATA. INCLUDED DATA TEMPLATES ONLY SHOW HOW DATA SHOULD BE STRUCTURED. PLEASE SEE ORIGINAL PUBLICATIONS/DATABASES FOR DATA.
--For SARD C14 data, https://c14.arch.ox.ac.uk/databases.html
--For marine reservoir data, see http://calib.org/marine/ 
--For paleoclimate data, see https://www.drbrianchase.com/data-and-software
--For mircocharcoal data, most can be found in https://www.paleofire.org/index.php. For other sources, see SI table 1 in Fire and Holocene landscapes of Southern AfricaSI_FINAL.pdf
+*For SARD C14 data, https://c14.arch.ox.ac.uk/databases.html
+*For marine reservoir data, see http://calib.org/marine/ 
+*For paleoclimate data, see https://www.drbrianchase.com/data-and-software
+*For mircocharcoal data, most can be found in https://www.paleofire.org/index.php. For other sources, see SI table 1 in Fire and Holocene landscapes of Southern AfricaSI_FINAL.pdf
