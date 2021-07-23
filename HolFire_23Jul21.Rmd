@@ -1,0 +1,1044 @@
+---
+title: "Fire and the management of late Holocene landscapes in southern Africa"
+author: "Ben Davies"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+This code is used to analyze and visualize microcharcoal and radiocarbon data and produce figures for an upcoming publication: 
+
+Davies, B., M. J. Power, D. R. Braun, M. J. Douglass, S. Mosher, L. Quick, I. Esteban, J. Sealy and J. T. Faith, In review. Fire and the management of late Holocene landscapes in southern Africa. 
+
+# Step 0: Clear all and Load packages
+```{r message=FALSE}
+#Clear all
+rm(list = ls())
+
+#Load packages
+require(rcarbon)
+require(geosphere)
+require(tidyverse)
+require(ggExtra)
+require(gridExtra)
+require(grid)
+require(RColorBrewer)
+require(ggpubr)
+require(lemon)
+require(zoo)
+require(rgdal)
+require(scales)
+require(EnvStats)
+#require(paleofire)
+```
+
+# Step 1: Functions
+```{r message=FALSE}
+#Function returns dataframe used for radiocarbon calibration. Dataframe contains curves ("shcal13"), deltaRs, and delataErrs, the latter two obtained for marine samples only from a table of Calib marine reservoir readings, using the closest lat/long marine reservoir reading by rhumbline to the lat/long of the 14C determination
+getCurvesandOffsets<-function(data,mres){
+  marines<-c("marine shell","Marine shell","marine other")
+  curves<-c()
+  deltaRs<-c()
+  deltaErr<-c()
+  for (i in c(1:length(data[,1]))){
+    if (data[i,11] %in% marines) {
+      curves<-append(curves,"marine13")
+      siteLoc<-c(data[i,4],data[i,3])
+      shortest<-999999999999
+      reading<-0
+      for (j in c(1:length(mres[,1]))){
+        marineLoc<-c(mres[j,2],mres[j,3])
+        d<-distRhumb(siteLoc,marineLoc)
+        if (d < shortest) {
+          shortest<-d
+          reading<-j
+        }
+      }
+      deltaRs<-append(deltaRs,mres[reading,4])
+      deltaErr<-append(deltaErr,mres[reading,5])
+    } else {
+      curves<-append(curves,"shcal13")
+      deltaRs<-append(deltaRs,0)
+      deltaErr<-append(deltaErr,0)
+    }
+  }
+  data.frame(curves,deltaRs,deltaErr)
+}
+
+#Function performs automated check of SARD data for instances where a site code used for two different sites or where lat/long values are slightly off.
+check_errs<-function(data){
+  data1<-data
+  sites <- unique(data.frame(id=data1$SITE_CODE,lat=data1$LATITUDE,lon=data1$LONGITUDE))
+  dups<-duplicated(sites$id)
+  for (i in c(1:length(dups))){
+    if (dups[i] == TRUE){
+      sc<-sites$id[i] #the duplicate site code
+      sub<-subset(data1,SITE_CODE == sc) #a subset of the full dataset with that site code
+      ind<-which(data1$SITE_CODE== sc) #the indices of the that subset in the full datatset
+      #check for two different sites sharing the same code
+      snames<-unique(sub$SITE) #site names of subset
+      if (length(snames) > 1) {
+        for (j in ind){
+           data1[j,2]<-paste(sc,which(snames==data1[j,1]),sep="")
+        }
+      }
+      #check for two different sites sharing the same code
+      if (length(unique(sub$LATITUDE))>1||length(unique(sub$LONGITUDE))>1){
+        lat<-mean(sub$LATITUDE)
+        lon<-mean(sub$LONGITUDE)
+        for (j in ind){
+          data1[j,3]<-lat
+          data1[j,4]<-lon
+        }
+      }
+      
+    }
+  }
+  count<-0
+  for (i in c(1:length(data1[,1]))){
+    if (data1[i,4] < 18) {
+     if (data1[i,7] == "S") {
+       data1[i,7]<-"W"
+       count<-count+1
+     }
+    }
+  }
+data1
+}
+
+#Function to get rate of change from vector
+roc <- function(x) diff(x)/x[-length(x)]
+
+
+```
+
+
+# Step 2: Load data
+```{r message=FALSE}
+#INCLUDED DATA TEMPLATES SHOW HOW DATA SHOULD BE STRUCTURED. PLEASE SEE ORIGINAL PUBLICATIONS/DATABASES FOR DATA.
+
+#MANUAL PREPROCESSING OF SARD DATA
+# 1)Converted dates with "Modern" to 0 with 0 SD
+
+# 2) Removed dates with > symbol (OxA-27318 Pta-0213 Pta-0214 Pta-0231 Pta-0354 Pta-1244 Pta-1275 Pta-2741 Pta-447 Pta-459 Pta-463 Pta-488 Pta-489 Pta-760 Pta-7775 Pta-8136 Pta-8137 Pta-8139 Pta-8142 Pta-8180  Pta-872 SR-0116 SR-7 UBA-17616 UGA-6729 UGA-6730 Wits-1386 [WC] Pta-5328 Pta-5334)
+
+# 3) Removed dates with a negative value for SD (Pta-504 GX-21191 Pta-1274 Pta-719 GX-21190 Pta-877 GX-21189 Pta-1190 GrN-5313 ANUA-17304)
+
+# SARD C14 data (https://c14.arch.ox.ac.uk/databases.html)
+c14_all<-read.csv("data//c14//c14_all_revised.csv",stringsAsFactors = FALSE)
+c14_all<-check_errs(c14_all)
+c14_sa<-subset(c14_all,COUNTRY %in% c("South Africa","Lesotho","Swaziland"))
+c14_sa_closed<-subset(c14_sa,SITE_TYPE %in% c("rock art", "rock shelter"))
+c14_sa_open<-subset(c14_sa,SITE_TYPE %in% c("midden","mine","open site","settlement","shell midden", "", "furnace", "Human burial"))
+
+# Subset for West/GCFR
+c14_cfr<-subset(c14_sa,BIOME %in% c("Succulent Karoo Biome","Fynbos Biome","Forest"))
+c14_cfr2<-subset(c14_sa,BIOME  %in% c("Azonal Vegetation","Forests"))
+c14_cfr2<-subset(c14_cfr2,RFZ %in% c("W","Y"))
+c14_cfr<-rbind(c14_cfr,c14_cfr2)
+c14_cfr_closed<-subset(c14_cfr,SITE_TYPE %in% c("rock art", "rock shelter"))
+c14_cfr_open<-subset(c14_cfr,SITE_TYPE %in% c("midden","mine","open site","settlement","shell midden", "", "furnace", "Human burial"))
+
+# Subset for SRZ
+c14_srz<-subset(c14_sa,RFZ == "S")
+c14_srz_closed<-subset(c14_srz,SITE_TYPE %in% c("rock art", "rock shelter"))
+c14_srz_open<-subset(c14_srz,SITE_TYPE %in% c("midden","mine","open site","settlement","shell midden", "", "furnace", "Human burial"))
+
+# Subset for pastoralist site counts
+c14_iron<-subset(c14_sa,ARCH_PERIO == "Iron Age")
+c14_ceramic<-subset(c14_sa,ARCH_SUBPE == "Ceramic LSA")
+#The subsetting of ceramic dates <2300 is a convenient way to remove two anomalous Ceramic LSA dates from the SARD database:
+#1.	Die Kelders GaK-3878 (Schweitzer 1970) 2620 +/- 100 : This date is listed as coming from charcoal not found in situ and is considered unreliable.
+#2.	Kasteelberg M Pta-8431 (Sadr et al. 2003) 2490 +/- 60: The original publication doesn't give a date, instead only showing a plotted range for the calibrated date situated around 2000 BP. A later publication (Sadr et al. 2013) gives a different lab number (Pta-9057) and different date (2850 +/- 60).  It is also not included in Lander & Russell 2018.
+c14_ceramic<-subset(c14_ceramic,DATE<2300) 
+c14_pastoral<-rbind(c14_iron,c14_ceramic)
+
+#Marine reservoir data (http://calib.org/marine/)
+marineRes<-read.csv("data//c14//SAmarineres.csv",stringsAsFactors = FALSE)
+
+#Charcoal data (post-FORTRAN analysis, contact Mitchell Power or use paleofire R package Blarquez et al. 2014)
+char_all<-read.csv("data//char//char_all.csv",stringsAsFactors = FALSE)
+char_west<-read.csv("data//char//char_west.csv",stringsAsFactors = FALSE)
+char_east<-read.csv("data//char//char_east.csv",stringsAsFactors = FALSE)
+
+#Paleoclimate data (see https://www.drbrianchase.com/data-and-software)
+deRif<-read.csv("data//paleoclimate//derif_isotope.csv",stringsAsFactors = FALSE)
+baviaanskloof<-read.csv("data//paleoclimate//baviaanskloof_isotope.csv",stringsAsFactors = FALSE)
+sewe<-read.csv("data//paleoclimate//sewe_isotope.csv",stringsAsFactors = FALSE)
+northstack_ai<-read.csv("data//paleoclimate//hyrax_ai_northstack.csv",stringsAsFactors = FALSE)
+southstack_ai<-read.csv("data//paleoclimate//hyrax_ai_southstack.csv",stringsAsFactors = FALSE)
+
+#Spatial data (see https://www.naturalearthdata.com for shapefile)
+locdata<-read.csv("data//spatial//South_Africa_east_and_west.csv",stringsAsFactors = FALSE)
+SAshp<-readOGR("data//spatial//south_africa_border.shp")
+```
+
+# Step 3: Calibrate radiocarbon data from southern Africa and subsets
+```{r message=FALSE}
+#Same operations performed on all c14 data subsets, only the first is commented
+
+#All Southern Africa
+#subset to smaller window to speed processing and avoid errors
+alldates<-subset(c14_sa,DATE<15000)
+alldates<-subset(alldates,DATE>50)
+#Get appropriate calibration curves and offsets for each date
+curvesEtc<-getCurvesandOffsets(alldates,marineRes)
+#calibrate dates
+caldates<-rcarbon::calibrate(x=alldates$DATE,error=alldates$UNCERTAINT,ids=alldates$LAB_ID,dateDetails = alldates$SITE_CODE, calCurves = curvesEtc$curves,resOffsets=curvesEtc$deltaRs,resErrors=curvesEtc$deltaErr,timeRange=c(10000,0),normalised=FALSE,calMatrix = TRUE)
+
+#Closed Sites
+closed_dates<-subset(c14_sa_closed,DATE<15000)
+closed_dates<-subset(closed_dates,DATE>50)
+curvesEtc<-getCurvesandOffsets(closed_dates,marineRes)
+closed_caldates<-rcarbon::calibrate(x=closed_dates$DATE,error=closed_dates$UNCERTAINT,ids=closed_dates$LAB_ID,dateDetails = closed_dates$SITE_CODE, calCurves = curvesEtc$curves,resOffsets=curvesEtc$deltaRs,resErrors=curvesEtc$deltaErr,timeRange=c(10000,0),normalised=FALSE,calMatrix = TRUE)
+
+#Open Sites
+open_dates<-subset(c14_sa_open,DATE<15000)
+open_dates<-subset(open_dates,DATE>50)
+curvesEtc<-getCurvesandOffsets(open_dates,marineRes)
+open_caldates<-rcarbon::calibrate(x=open_dates$DATE,error=open_dates$UNCERTAINT,ids=open_dates$LAB_ID,dateDetails = open_dates$SITE_CODE, calCurves = curvesEtc$curves,resOffsets=curvesEtc$deltaRs,resErrors=curvesEtc$deltaErr,timeRange=c(10000,0),normalised=FALSE,calMatrix = TRUE)
+
+#Greater Cape Floristic Region
+cfr_dates<-subset(c14_cfr,DATE<15000)
+cfr_dates<-subset(cfr_dates,DATE>50)
+cfr_curvesEtc<-getCurvesandOffsets(cfr_dates,marineRes)
+cfr_caldates<-rcarbon::calibrate(x=cfr_dates$DATE,error=cfr_dates$UNCERTAINT,ids=cfr_dates$LAB_ID,dateDetails = cfr_dates$SITE_CODE,calCurves = cfr_curvesEtc$curves,resOffsets=cfr_curvesEtc$deltaRs,resErrors=cfr_curvesEtc$deltaErr,timeRange=c(10000,0),normalised=FALSE, calMatrix = TRUE)
+
+#Closed GCFR Sites
+closed_cfr_dates<-subset(c14_cfr_closed,DATE<15000)
+closed_cfr_dates<-subset(closed_cfr_dates,DATE>50)
+curvesEtc<-getCurvesandOffsets(closed_cfr_dates,marineRes)
+closed_cfr_caldates<-rcarbon::calibrate(x=closed_cfr_dates$DATE,error=closed_cfr_dates$UNCERTAINT,ids=closed_cfr_dates$LAB_ID,dateDetails = closed_cfr_dates$SITE_CODE, calCurves = curvesEtc$curves,resOffsets=curvesEtc$deltaRs,resErrors=curvesEtc$deltaErr,timeRange=c(10000,0),normalised=FALSE,calMatrix = TRUE)
+
+#Open GCFR Sites
+open_cfr_dates<-subset(c14_cfr_open,DATE<15000)
+open_cfr_dates<-subset(open_cfr_dates,DATE>50)
+curvesEtc<-getCurvesandOffsets(open_cfr_dates,marineRes)
+open_cfr_caldates<-rcarbon::calibrate(x=open_cfr_dates$DATE,error=open_cfr_dates$UNCERTAINT,ids=open_cfr_dates$LAB_ID,dateDetails = open_cfr_dates$SITE_CODE, calCurves = curvesEtc$curves,resOffsets=curvesEtc$deltaRs,resErrors=curvesEtc$deltaErr,timeRange=c(10000,0),normalised=FALSE,calMatrix = TRUE)
+
+#Summer Rainfall Zone
+srz_dates<-subset(c14_srz,DATE<15000)
+srz_dates<-subset(srz_dates,DATE>50)
+srz_curvesEtc<-getCurvesandOffsets(srz_dates,marineRes)
+srz_caldates<-rcarbon::calibrate(x=srz_dates$DATE,error=srz_dates$UNCERTAINT,ids=srz_dates$LAB_ID,dateDetails = srz_dates$SITE_CODE,calCurves = srz_curvesEtc$curves,resOffsets=srz_curvesEtc$deltaRs,resErrors=srz_curvesEtc$deltaErr,timeRange=c(10000,0),normalised=FALSE, calMatrix = TRUE)
+
+#Closed SRZ Sites
+closed_srz_dates<-subset(c14_srz_closed,DATE<15000)
+closed_srz_dates<-subset(closed_srz_dates,DATE>50)
+curvesEtc<-getCurvesandOffsets(closed_srz_dates,marineRes)
+closed_srz_caldates<-rcarbon::calibrate(x=closed_srz_dates$DATE,error=closed_srz_dates$UNCERTAINT,ids=closed_srz_dates$LAB_ID,dateDetails = closed_srz_dates$SITE_CODE, calCurves = curvesEtc$curves,resOffsets=curvesEtc$deltaRs,resErrors=curvesEtc$deltaErr,timeRange=c(10000,0),normalised=FALSE,calMatrix = TRUE)
+
+#Open SRZ Sites
+open_srz_dates<-subset(c14_srz_open,DATE<15000)
+open_srz_dates<-subset(open_srz_dates,DATE>50)
+curvesEtc<-getCurvesandOffsets(open_srz_dates,marineRes)
+open_srz_caldates<-rcarbon::calibrate(x=open_srz_dates$DATE,error=open_srz_dates$UNCERTAINT,ids=open_srz_dates$LAB_ID,dateDetails = open_srz_dates$SITE_CODE, calCurves = curvesEtc$curves,resOffsets=curvesEtc$deltaRs,resErrors=curvesEtc$deltaErr,timeRange=c(10000,0),normalised=FALSE,calMatrix = TRUE)
+
+#Pastoral dates
+pastoral_dates<-subset(c14_pastoral,DATE<15000)
+pastoral_dates<-subset(pastoral_dates,DATE>50)
+pastoral_curvesEtc<-getCurvesandOffsets(pastoral_dates,marineRes)
+pastoral_caldates<-rcarbon::calibrate(x=pastoral_dates$DATE,error=pastoral_dates$UNCERTAINT,ids=pastoral_dates$LAB_ID,dateDetails = pastoral_dates$SITE_CODE,calCurves = pastoral_curvesEtc$curves,resOffsets=pastoral_curvesEtc$deltaRs,resErrors=pastoral_curvesEtc$deltaErr,timeRange=c(10000,0),normalised=FALSE, calMatrix = TRUE)
+
+
+```
+
+# Step 4: Prepare bins and generate kernel density estimates, summed probability densities, and site counts
+```{r}
+#Prep bins for SPDs
+allbins<-binPrep(sites=alldates$SITE_CODE,ages=alldates$DATE,h=200)
+closed_bins<-binPrep(sites=closed_dates$SITE_CODE,ages=closed_dates$DATE,h=200)
+open_bins<-binPrep(sites=open_dates$SITE_CODE,ages=open_dates$DATE,h=200)
+cfr_bins<-binPrep(sites=cfr_dates$SITE_CODE,ages=cfr_dates$DATE,h=200)
+closed_cfr_bins<-binPrep(sites=closed_cfr_dates$SITE_CODE,ages=closed_cfr_dates$DATE,h=200)
+open_cfr_bins<-binPrep(sites=open_cfr_dates$SITE_CODE,ages=open_cfr_dates$DATE,h=200)
+srz_bins<-binPrep(sites=srz_dates$SITE_CODE,ages=srz_dates$DATE,h=200)
+closed_srz_bins<-binPrep(sites=closed_srz_dates$SITE_CODE,ages=closed_srz_dates$DATE,h=200)
+open_srz_bins<-binPrep(sites=open_srz_dates$SITE_CODE,ages=open_srz_dates$DATE,h=200)
+pastoral_bins<-binPrep(sites=pastoral_dates$SITE_CODE,ages=pastoral_dates$DATE,h=200)
+
+#Generate SPDs
+allSPD<-spd(caldates,timeRange=c(10000,0),bins=allbins,datenormalised=FALSE,spdnormalised=FALSE)
+open_SPD<-spd(open_caldates,timeRange=c(10000,0),bins=open_bins,datenormalised=FALSE,spdnormalised=FALSE)
+closed_SPD<-spd(closed_caldates,timeRange=c(10000,0),bins=closed_bins,datenormalised=FALSE,spdnormalised=FALSE)
+cfr_SPD<-spd(cfr_caldates,timeRange=c(10000,0),bins=cfr_bins,datenormalised=FALSE,spdnormalised=FALSE)
+open_cfr_SPD<-spd(open_cfr_caldates,timeRange=c(10000,0),bins=open_cfr_bins,datenormalised=FALSE,spdnormalised=FALSE)
+closed_cfr_SPD<-spd(closed_cfr_caldates,timeRange=c(10000,0),bins=closed_cfr_bins,datenormalised=FALSE,spdnormalised=FALSE)
+srz_SPD<-spd(srz_caldates,timeRange=c(10000,0),bins=srz_bins,datenormalised=FALSE,spdnormalised=FALSE)
+open_srz_SPD<-spd(open_srz_caldates,timeRange=c(10000,0),bins=open_srz_bins,datenormalised=FALSE,spdnormalised=FALSE)
+closed_srz_SPD<-spd(closed_srz_caldates,timeRange=c(10000,0),bins=closed_srz_bins,datenormalised=FALSE,spdnormalised=FALSE)
+pastoral_SPD<-spd(pastoral_caldates,timeRange=c(10000,0),bins=pastoral_bins,datenormalised=FALSE,spdnormalised=FALSE)
+
+#Taphonomically corrected SPDs (per Bluhm and Surovell 2018)
+#"Open sites" are corrected and then combined with "closed sites"
+all_open_correct<-transformSPD(open_SPD,correction = expression(PrDens/(21149.57 * (CalBP + 1788.03)^-1.26)))
+allCorrect<-(all_open_correct$grid$PrDens+closed_SPD$grid$PrDens)
+cfr_open_correct<-transformSPD(open_cfr_SPD,correction = expression(PrDens/(21149.57 * (CalBP + 1788.03)^-1.26)))
+cfrCorrect<-(cfr_open_correct$grid$PrDens+closed_cfr_SPD$grid$PrDens)
+srz_open_correct<-transformSPD(open_srz_SPD,correction = expression(PrDens/(21149.57 * (CalBP + 1788.03)^-1.26)))
+srzCorrect<-(srz_open_correct$grid$PrDens+closed_srz_SPD$grid$PrDens)
+
+AllSA<-allCorrect
+EastSA<-cfrCorrect
+WestSA<-srzCorrect
+archframe<-data.frame(calBP=c(10000:0),AllSA,EastSA,WestSA)
+```
+
+#Step 5: Generate site counts
+```{r}
+#empty vectors to list sites
+all_sites<-c()
+cfr_sites<-c()
+srz_sites<-c()
+pastoral_sites<-c()
+#add to bins for histogram (250 year intervals)
+breaks<-seq(0,10000,by=250)
+#for each bin, subset data to temporal window, then add unique site IDs to respective vectors
+for (i in c(1:(length(breaks)-1))) {
+  t1<-breaks[i]
+  t2<-breaks[i+1]
+  all_break<-subset(caldates,BP<=t2&BP>t1,p=0.5)
+  all_sites<-append(all_sites,length(unique(all_break$metadata$Details)))
+  cfr_break<-subset(cfr_caldates,BP<=t2&BP>t1,p=0.5)
+  cfr_sites<-append(cfr_sites,length(unique(cfr_break$metadata$Details)))
+  srz_break<-subset(srz_caldates,BP<=t2&BP>t1,p=0.5)
+  srz_sites<-append(srz_sites,length(unique(srz_break$metadata$Details)))
+  pastoral_break<-subset(pastoral_caldates,BP<=t2&BP>t1,p=0.5)
+  pastoral_sites<-append(pastoral_sites,length(unique(pastoral_break$metadata$Details)))
+}
+#vector of bin midpoints
+calBP<-seq(125,9875,by=250)
+#dataframe of bin midpoints, all site counts, and pastoral site counts
+archframe3<-data.frame(calBP,all_sites,pastoral_sites)
+```
+
+## FIGURES
+
+#Figure 2: Composite charcoal records
+```{r}
+#Set theme
+theme_set(theme_classic())
+#only use data with positive age values
+allchar<-subset(char_all,targ_age>0)
+#get number of contributing sampling sites per time step (transformed for plotting on secondary axis)
+allcharNWIN<--1+(0.25*(allchar$ninwin/max(allchar$ninwin)))
+#aggregate data
+allchar<-cbind(allchar,allcharNWIN)
+
+#All Southern Africa Charcoal
+p1<-ggplot(allchar,aes(x=targ_age,y=influx_zt10k_sm10_0250_boot)) +
+  geom_rect(aes(xmin = 0, xmax = 2200, ymin = -Inf, ymax = Inf), fill = "grey90", alpha = 0.5) +
+  geom_ribbon(data=allchar, aes(x=targ_age, ymin=yfit_boot_cl95, ymax=yfit_boot_cu95),fill="grey75",linetype=0,colour="black") +
+  geom_line(colour="black",size=1) +
+  geom_line(y=allcharNWIN,col="#661100") +
+  xlab("Years Cal BP") +
+  ylab(expression(italic("z"))) +
+  xlim(0,10000) +
+  coord_cartesian(ylim = c(-1,1), xlim = c(0,10000),clip="off") +
+  theme(plot.margin=unit(c(1,1,1,1), "cm"))+
+  scale_x_continuous(limits=c(0,10000),breaks=seq(0,10000,by=2000)) +
+  scale_y_continuous(sec.axis = sec_axis(~22-((1*(-0.75-.)/0.25)*22), name="# of sites  ",breaks=c(0,10,20))) +
+  theme(
+    axis.title.y.right = element_text(color = "#661100",hjust=1),
+    axis.text.y.right = element_text(color = "#661100"),
+    axis.ticks.y.right = element_line(color = "#661100"),
+    axis.line.y.right= element_line(color = "white"),
+    axis.line.y= element_line(color = "white")) 
+
+#SRZ Charcoal
+srz_char<-subset(char_east,targ_age>0)
+p2<-ggplot(srz_char,aes(x=targ_age,y=influx_zt10k_sm10_0250_boot)) +
+  geom_rect(aes(xmin = 0, xmax = 2200, ymin = -Inf, ymax = Inf), fill = "grey90", alpha = 0.5) +
+  geom_ribbon(data=srz_char, aes(x=targ_age, ymin=yfit_boot_cl95, ymax=yfit_boot_cu95),fill="#6699CC",linetype=0,colour="#332288") +
+  geom_line(colour="#332288",size=1) +
+  xlab("Years Cal BP") +
+  ylab(expression(italic("z"))) +
+  xlim(0,10000) +
+  coord_cartesian(ylim = c(-1,1), xlim = c(0,10000),clip="off") +
+  theme(plot.margin=unit(c(1,1,1,0), "cm"))+
+  scale_x_continuous(limits=c(0,10000),breaks=seq(0,10000,by=2000)) +
+  theme( axis.line.y= element_line(color = "white")) 
+
+#GCFR Charcoal
+cfr_char<-subset(char_west,targ_age>0)
+p3<-ggplot(cfr_char,aes(x=targ_age,y=influx_zt10k_sm10_0250_boot)) +
+  geom_rect(aes(xmin = 0, xmax = 2200, ymin = -Inf, ymax = Inf), fill = "grey90", alpha = 0.5) +
+  geom_ribbon(data=cfr_char, aes(x=targ_age, ymin=yfit_boot_cl95, ymax=yfit_boot_cu95),fill="#CC6677",linetype=0,colour="#661100") +
+  geom_line(colour="#661100",size=1) +
+  xlab("Years Cal BP") +
+  ylab(expression(italic("z"))) +
+  xlim(0,10000) +
+  coord_cartesian(ylim = c(-1.5,1.5), xlim = c(0,10000),clip="off") +
+  theme(plot.margin=unit(c(1,1,1,0), "cm"))+
+  scale_x_continuous(limits=c(0,10000),breaks=seq(0,10000,by=2000)) +
+  theme( axis.line.y= element_line(color = "white"))
+
+#Difference between western and eastern charcoal z scores
+dates<-allchar$targ_age
+ew_diff<-data.frame(dates=dates,diffs=abs(srz_char$influx_zt10k_sm10_0250_boot-cfr_char$influx_zt10k_sm10_0250_boot))
+p4<-ggplot(ew_diff,aes(x=dates,y=diffs)) +
+  geom_rect(aes(xmin = 0, xmax = 2200, ymin = -Inf, ymax = Inf), fill = "grey90", alpha = 0.5) +
+  geom_line(colour="black",size=1) +
+  xlab("Years Cal BP") +
+  ylab(expression("Difference ",italic("z"))) +
+  xlim(0,10000) +
+  coord_cartesian(ylim = c(0,2), xlim = c(0,10000)) +
+  theme(plot.margin=unit(c(1,1,1,0), "cm"))+
+  scale_x_continuous(limits=c(0,10000),breaks=seq(0,10000,by=10000)) +
+  theme( axis.line.y= element_line(color = "white"))
+
+#Assemble and save figure
+png("Fig2_CharPlot.png",width=8,height=8,units="in",res=600)
+ggarrange(p1,ggarrange(p2,p3,p4,ncol=3,labels=c("B","C","D")),nrow=2,labels="A",heights=c(2,1))
+dev.off()
+```
+
+
+#Figure 3: Mapping charcoal influx
+```{r}
+#for each file in folder
+files<-list.files("data//char//raw")
+sites<-c()
+#for each file in folder, read in raw data, minmax/boxcox/minmax influx data, add transformed z as column and assign to site object
+for (i in files){
+  data<-read.csv(paste("data//char//raw//",i,sep=""),row.names=NULL,stringsAsFactors = FALSE)
+  data<-subset(data,est_age<=10000)
+  inf<-data$influx
+  minmax_inf<-rescale(inf,to=c(0,1))
+  minmax_inf<-minmax_inf+0.01
+  boxcox_params<-EnvStats::boxcox(minmax_inf,lambda=c(-2,2),optimize=TRUE,objective.name="Log-Likelihood")
+  boxcox_inf<-EnvStats::boxcoxTransform(minmax_inf,lambda=boxcox_params$lambda)
+  minmax_boxcox_inf<-rescale(boxcox_inf,to=c(0,1))
+  m<-mean(minmax_boxcox_inf)
+  s<-sd(minmax_boxcox_inf)
+  data$influx.z<-(minmax_boxcox_inf - m) / s
+  siteName<-substr(i,1,4)
+  siteName<-paste("site",siteName,sep="")
+  sites<-append(sites,siteName)
+  assign(siteName,data)
+}
+
+#Create single table with site,date,long/lat with jitter,and zscore for each individual record
+siteid<-c()
+datex<-c()
+long<-c()
+lat<-c()
+yfit<-c()
+for (j in c(1:length(sites))) {
+  site <- get(sites[j])
+  sitenum<-str_remove(sites[j],"site0")
+  sitenum<-str_remove(sitenum,"site")
+  loc <- subset(locdata, SITEID == sitenum)
+  for (k in c(1:length(site[,1]))) {
+    siteid <- append(siteid, sites[j])
+    datex <- append(datex, site[k, 4])
+    jitterx<-rnorm(1,0,0.1)
+    jittery<-rnorm(1,0,0.1)
+    long <- append(long, loc[1, 5]+jitterx)
+    lat <- append(lat, loc[1, 4]+jittery)
+    yf<-site[k,12]
+    if (yf == -9999){
+     yf<-NA
+    }
+    yfit<-append(yfit,yf)
+  }
+}
+mapdata<-data.frame(siteid,datex,long,lat,yfit)
+
+#For each time interval, subsset data to time window, then subset to positive and negative z. Plot points for each time interval positive (red) and negative (blue), with size indicating deviation from 1
+breaks<-seq(10000,0,by=-2000)
+png("Fig3_CharMap_v3.png",width=6,height=8,units="in",res=600)
+
+m <- matrix(c(1,1,2,3,4,5,6,7),nrow = 4,ncol = 2,byrow = TRUE)
+layout(mat = m,heights = c(0.1,0.3,0.3,0.3))
+par(mar = c(0, 1, 0, 1)) 
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend(x = "center",title=expression(bold("Char Influx (z)")),inset = 0,  bty = "n",
+       legend = c("  -3     ","-1.5     ","-0.5","0.5","+1.5     ","  +3    "), pt.cex=c(6,3,1,1,3,6),pch=1,
+       col=c(alpha("royalblue4",0.4),alpha("royalblue4",0.4),alpha("royalblue4",0.4),alpha("red4",0.4),alpha("red4",0.4),alpha("red4",0.4)), horiz = TRUE)
+for (i in c(1:(length(breaks)-1))){
+  mapdata2<-subset(mapdata,datex<breaks[i])
+  up_break<-breaks[i+1]
+  if (up_break==0){
+    up_break<-200
+  }
+  mapdata2<-subset(mapdata2,datex>=up_break)
+  mapdataneg<-subset(mapdata2,yfit<0)
+  mapdatapos<-subset(mapdata2,yfit>0)
+  par(mar = c(1, 1, 1, 1)) 
+  plot(SAshp,main=paste(breaks[i]/1000," - ",breaks[i+1]/1000,"kBP",sep=""))
+  len<-0
+  if (length(mapdatapos[,1]>mapdataneg[,1])){
+    len<-length(mapdatapos[,1])
+  }
+  else {
+    length(mapdataneg[,1])
+  }
+  for (m in c(1:len)){
+    if (m <= length(mapdataneg[,1])){
+    points(mapdataneg[m,3],mapdataneg[m,4],col=alpha("royalblue4",0.4),pch=1,cex=abs(mapdataneg[m,5])*2)
+    }
+  if (m <= length(mapdatapos[,1])){
+    points(mapdatapos[m,3],mapdatapos[m,4],col=alpha("red4",0.4),pch=1,cex=mapdatapos[m,5]*2)
+  }
+ 
+}
+}
+plot.new()
+dev.off()
+```
+
+
+#Figure 4: Compare charcoal, climate, C14 
+```{r}
+#Eastern South Africa charcoal
+theme_set(theme_classic())  
+eastchar<-subset(char_east,targ_age>0)
+p4<-ggplot(eastchar,aes(x=targ_age,y=yfit_boot_median)) +
+  geom_rect(aes(xmin=0,
+                xmax =2200,
+                ymin = -Inf,
+                ymax = Inf), fill = 'grey90', alpha = 0.2) +
+  geom_ribbon(data=eastchar, aes(x=targ_age, ymin=yfit_boot_cl95, ymax=yfit_boot_cu95),fill="#6699CC",linetype=0,colour="#332288") +
+  geom_line(colour="#332288",size=1) +
+  xlab("") +
+  ylab("") +
+  xlim(0,10000) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.line.x = element_blank(),
+        axis.text.y=element_text(colour="#332288"),
+        axis.ticks.y=element_line(colour="#332288"),
+        axis.line.y = element_line(colour="#332288"),
+        plot.margin=unit(c(1,1,0,1), "cm"))+
+  geom_text(x=3000, y=-0.8, label="Eastern S. Africa Charcoal",color="#332288",size=3) +
+  scale_y_continuous(position="right") +
+  coord_cartesian(ylim = c(-1,0.8), xlim = c(0,10000),clip="off") 
+
+#Southern SRZ AI
+p5<-ggplot(southstack_ai,aes(x=AgeBP,y=Optimum)) +
+  geom_rect(aes(xmin=0,
+                xmax =2200,
+                ymin = -Inf,
+                ymax = Inf), fill = 'grey90', alpha = 0.2) +
+  geom_ribbon(data=southstack_ai, aes(x=AgeBP, ymin=low30, ymax=up30),fill="#E69F00") +
+  geom_line(colour="#D55E00",size=1) +
+  xlab("") +
+  ylab("") +
+  xlim(0,10000)+
+  ylim(-0.1,0.1)+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.line.x = element_blank(),
+        axis.text.y=element_text(colour="#D55E00"),
+        axis.ticks.y=element_line(colour="#D55E00"),
+        axis.line.y = element_line(colour="#D55E00"),
+        plot.margin=unit(c(-0.1,1,0,1), "cm"))+
+#    scale_x_continuous(limits=c(0,10000),breaks=seq(0,10000,by=2000)) +
+  geom_text(x=8500, y=-0.05,  label="Southern SRZ Aridity Index",colour="#D55E00",size=3) +
+  coord_cartesian(xlim = c(0,10000),clip="off")
+
+#Western South Africa charcoal
+westchar<-subset(char_west,targ_age>0)
+p6<-ggplot(westchar,aes(x=targ_age,y=yfit_boot_median)) +
+  geom_rect(aes(xmin=0,
+                xmax =2200,
+                ymin = -Inf,
+                ymax = Inf), fill = 'grey90', alpha = 0.2) +
+  geom_ribbon(data=westchar, aes(x=targ_age, ymin=yfit_boot_cl95, ymax=yfit_boot_cu95),fill="#CC6677",linetype=0,colour="#332288") +
+  geom_line(colour="#661100",size=1) +
+  xlab("") +
+  ylab("") +
+  xlim(0,10000) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.line.x = element_blank(),
+        axis.text.y=element_text(colour="#661100"),
+        axis.ticks.y=element_line(colour="#661100"),
+        axis.line.y = element_line(colour="#661100"),
+         plot.margin=unit(c(-0.1,1,0,1), "cm"))+
+  geom_text(x=4000, y=-1, label="Western S. Africa Charcoal",color="#661100",size=3) +
+  scale_y_continuous(position="right") +
+  coord_cartesian(ylim = c(-1,0.8), xlim = c(0,10000),clip="off") 
+
+#Seweweekspoort d15N
+p7<-ggplot(sewe,aes(x=CAL_BP,y=LOESS)) +
+  geom_rect(aes(xmin=0,
+                xmax =2200,
+                ymin = -Inf,
+                ymax = Inf), fill = 'grey90', alpha = 0.2) +
+  geom_line(colour="#117733",size=1) +
+  xlab("") +
+  ylab("") +
+  xlim(0,10000)+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.line.x = element_blank(),
+        axis.text.y=element_text(colour="#117733"),
+        axis.ticks.y=element_line(colour="#117733"),
+        axis.line.y = element_line(colour="#117733"),
+        plot.margin=unit(c(-0.1,1,0,1), "cm"))+
+  geom_text(x=8000, y=2,label=paste("Seweweekspoort \u3b4\ub9\u2075N",sep=""),color="#117733",size=3) +
+  coord_cartesian(xlim = c(0,10000),clip="off")
+
+#De Rif d15N
+p8<-ggplot(deRif,aes(x=ageBP,y=nitrogen)) +
+  geom_rect(aes(xmin=0,
+                xmax =2200,
+                ymin = -Inf,
+                ymax = Inf), fill = 'grey90', alpha = 0.2) +
+  geom_line(colour="#AA4499",size=1) +
+  xlab("") +
+  ylab("") +
+  xlim(0,10000)+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.line.x = element_blank(),
+        axis.text.y=element_text(colour="#AA4499"),
+        axis.ticks.y=element_line(colour="#AA4499"),
+        axis.line.y = element_line(colour="#AA4499"),
+        plot.margin=unit(c(-0.1,1,0,1), "cm"))+
+  geom_text(x=5000, y=0.2,label=paste("De Rif \u3b4\ub9\u2075N",sep=""),color="#AA4499",size=3) +
+  scale_y_continuous(position="right") +
+  coord_cartesian(xlim = c(0,10000),clip="off")
+
+#Baviaanskloof d15N
+p9<-ggplot(baviaanskloof,aes(x=MEAN,y=D15N)) +
+  geom_rect(aes(xmin=0,
+                xmax =2200,
+                ymin = -Inf,
+                ymax = Inf), fill = 'grey90', alpha = 0.2) +
+  geom_line(colour="#661100",size=1) +
+  xlab("") +
+  ylab("") +
+  xlim(0,10000)+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.line.x = element_blank(),
+        axis.title.y=element_text(colour="#661100"),
+        axis.text.y=element_text(colour="#661100"),
+        axis.ticks.y=element_line(colour="#661100"),
+        axis.line.y = element_line(colour="#661100"),
+        plot.margin=unit(c(-0.1,1,0,1), "cm"))+
+  geom_text(x=8500, y=5,  label=paste("Baviaanskloof \u3b4\ub9\u2075N",sep=""),color="#661100",size=3) +
+  coord_cartesian(xlim = c(0,10000),clip="off")
+
+#  South African C14 
+ p10<-ggplot(archframe,aes(x=calBP,y=AllSA)) +
+ geom_rect(aes(xmin=0,
+               xmax =2200,
+               ymin = -Inf,
+               ymax = Inf), fill = 'grey90', alpha = 0.2) +
+ geom_line(data=archframe, aes(x=calBP, y=AllSA),colour="black")+
+ geom_line(data=archframe, aes(x=calBP, y=EastSA),colour="#661100")+
+ geom_line(data=archframe, aes(x=calBP, y=WestSA),colour="#332288")+
+ xlab("Years CalBP") +
+ ylab("") +
+ xlim(0,10000)+
+ ylim(0,0.6)+
+ theme(axis.title.x=element_blank(),
+         axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.line.x = element_blank(),
+        plot.margin=unit(c(-0.1,1,0,1), "cm"))+
+ # scale_x_continuous(limits=c(0,10000),breaks=seq(0,10000,by=2000)) +
+  geom_text(x=7000, y=0.3, label="Southern Africa \ub9\u2074C",colour="black",size=3) +
+  geom_text(x=7000, y=0.25, label="East (SRZ) \ub9\u2074C",colour="royalblue4",size=3) +
+  geom_text(x=7000, y=0.2, label="West (GCFR) \ub9\u2074C",colour="red4",size=3) +
+  coord_cartesian(xlim = c(0,10000),clip="off") +
+  scale_y_continuous(position="right") +
+  coord_cartesian(xlim = c(0,10000),clip="off")
+
+#South African site counts
+p11<-ggplot(archframe3,aes(x=calBP))+
+  geom_rect(aes(xmin=0,
+                xmax =2200,
+                ymin = -Inf,
+                ymax = Inf), fill = 'grey90', alpha = 0.2) +
+  geom_bar(aes(y=all_sites),stat="identity", position ="identity",fill="black",colour="black")+
+  geom_bar(aes(y=pastoral_sites),stat="identity", position ="identity",fill="white",colour="black")+
+  ylab("") +
+  xlab("Years Cal BP") +
+  xlim(0,10000)+
+  theme(
+        axis.text.y=element_text(colour="black"),
+        axis.ticks.y=element_line(colour="black"),
+        axis.line.y = element_line(colour="black"),
+        plot.margin=unit(c(-0.1,1,0,1), "cm"))+
+  scale_x_continuous(limits=c(0,10000),breaks=seq(0,10000,by=2000)) +
+  geom_text(x=8000, y=60, label="Southern Africa Site Counts",color="black",size=3) +
+#   scale_y_continuous(position="right") +
+  coord_cartesian(xlim = c(0,10000),clip="off") 
+  
+#Assemble and save figure
+png("Fig4_ProxyCompare.png",width=5,height=11,units="in",res=800)
+grid.draw(rbind(ggplotGrob(p4), ggplotGrob(p5), ggplotGrob(p6), ggplotGrob(p7), ggplotGrob(p8), ggplotGrob(p9), ggplotGrob(p10),  ggplotGrob(p11),size="first"))
+dev.off()
+
+
+
+#Note: indicator arrows and plot letter labels added using GNU Image Manipulation Program
+```
+
+## SUPPLEMENTARY INFORMATION FIGURES
+
+#SI Fig 1 Hovmuller plot of charcoal records
+```{r}
+#Pull individual data files from char analysis
+files<-list.files("data//char//raw")
+sites<-c()
+#for each file in folder, transform minmax/boxcox/minmax to z-scores
+for (i in files){
+  data<-read.csv(paste("data//char//raw//",i,sep=""),row.names=NULL,stringsAsFactors = FALSE)
+  data<-subset(data,est_age<=12000)
+  inf<-data$influx
+  minmax_inf<-rescale(inf,to=c(0,1))
+  minmax_inf<-minmax_inf+0.01
+  boxcox_params<-EnvStats::boxcox(minmax_inf,lambda=c(-2,2),optimize=TRUE,objective.name="Log-Likelihood")
+  boxcox_inf<-EnvStats::boxcoxTransform(minmax_inf,lambda=boxcox_params$lambda)
+  minmax_boxcox_inf<-rescale(boxcox_inf,to=c(0,1))
+  m<-mean(minmax_boxcox_inf)
+  s<-sd(minmax_boxcox_inf)
+  data$influx.z<-(minmax_boxcox_inf - m) / s
+  siteName<-substr(i,1,4)
+  siteName<-paste("site",siteName,sep="")
+  sites<-append(sites,siteName)
+  assign(siteName,data)
+}
+
+#Create single table with site,date,and zscore for each individual dated record (limited to -1 to 1)
+siteid<-c()
+datex<-c()
+influx<-c()
+for (j in c(1:length(sites))) {
+  site <- get(sites[j])
+  sitenum<-str_remove(sites[j],"site0")
+  sitenum<-str_remove(sitenum,"site")
+  for (k in c(1:length(site[,1]))) {
+    siteid <- append(siteid, sitenum)
+    datex <- append(datex, site[k, 4])
+    yf<-site[k,12]
+   if (yf > 1){
+     yf<-1
+   }
+   if (yf< -1 && yf > -9999){
+      yf<- -1
+   }
+    if (yf == -9999){
+     yf<-NA
+    }
+    influx<-append(influx,yf)
+
+  }
+}
+hovdata<-data.frame(siteid,datex,influx)
+
+#Create single table with site name, time bin, and z-score
+bins<-seq(0,10000,by=50)
+site<-c()
+sitename<-c()
+date<-c()
+z<-c()
+for (j in c(1:length(sites))) {
+  for (k in c(1:(length(bins)-1))){
+      sitenum<-str_remove(sites[j],"site0")
+     sitenum<-str_remove(sitenum,"site")
+    location<-subset(locdata,SITEID==sitenum)
+    sn<-location[1,3]
+    sub<-subset(hovdata,siteid==sitenum)
+    sub<-subset(sub,datex>=bins[k])
+    sub<-subset(sub,datex<bins[k+1])
+    if (length(sub[,1])>1){
+      site<-append(site,sites[j])
+      sitename<-append(sitename,sn)
+      date<-append(date,bins[k])
+      z<-append(z,mean(sub$influx))
+    }
+    else if (length(sub[,1])==1){
+      site<-append(site,sites[j])
+      sitename<-append(sitename,sn)
+      date<-append(date,bins[k])
+      z<-append(z,sub$influx)
+    }
+    else {
+      site<-append(site,sites[j])
+      sitename<-append(sitename,sn)
+      date<-append(date,bins[k])
+      z<-append(z,NA)
+    }
+  }
+}
+hovdata2<-data.frame(site,sitename,date,z)
+
+#Put data in geographically meaningful order (west to east)
+hovdata3<-hovdata2 %>%
+ mutate(sitename = fct_relevel(sitename, 
+           "Pella 1_1","Pella 1_4a","Groenkloof","Verlorenvlei","Pakhuis Pass","De Rif-1","De Rif-2","Katbakkies Pass","Pearly Beach","Princessvlei","Rietvlei Wetland","Eilandvlei lake","Vankervelsvlei","Platbos 1","Rietvlei Dam","Moreletta River","Lake Teza","Lake Sibaya","Elim","Tswaing Crater","Craigrossie","Braamhoek","Mahaqwa","Wonderkrater borehole 3","Scot's Farm Borehole 1","Tate Vondo","Funduzi"))
+
+#Hovmuller plot
+labcols<-append(rep("red",14),rep("blue",13))
+ p <- 
+   ggplot(hovdata3,aes(x=date,y=sitename,fill=z))+
+    geom_tile(colour="white",size=0.2)+
+    scale_fill_gradient2(low="navy", mid="white", high="red", 
+                       midpoint=0, na.value = "grey90") +
+   theme_classic() +
+   labs(x="Years cal BP", y=NULL)+
+   geom_vline(xintercept = 2000, size=0.5) +
+   theme(axis.text.y = element_text(colour = labcols))
+
+png("SI_Fig1_HovPlot.png",width=8,height=6,units="in",res=600)
+p
+dev.off()
+```
+
+
+#Si Fig 2 Map absolute differences in number of positive/negative anomalies
+```{r}
+
+#for each file in folder
+files<-list.files("data//char//raw")
+sites<-c()
+#for each file in folder, read in raw data, minmax/boxcox/minmax influx data, add transformed z as column and assign to site object
+for (i in files){
+  data<-read.csv(paste("data//char//raw//",i,sep=""),row.names=NULL,stringsAsFactors = FALSE)
+  data<-subset(data,est_age<=10000)
+  inf<-data$influx
+  minmax_inf<-rescale(inf,to=c(0,1))
+  minmax_inf<-minmax_inf+0.01
+  boxcox_params<-EnvStats::boxcox(minmax_inf,lambda=c(-2,2),optimize=TRUE,objective.name="Log-Likelihood")
+  boxcox_inf<-EnvStats::boxcoxTransform(minmax_inf,lambda=boxcox_params$lambda)
+  minmax_boxcox_inf<-rescale(boxcox_inf,to=c(0,1))
+  m<-mean(minmax_boxcox_inf)
+  s<-sd(minmax_boxcox_inf)
+  data$influx.z<-(minmax_boxcox_inf - m) / s
+  siteName<-substr(i,1,4)
+  siteName<-paste("site",siteName,sep="")
+  sites<-append(sites,siteName)
+  assign(siteName,data)
+}
+
+#Create single table with site,date,long/lat with jitter,and zscore for each individual record
+siteid<-c()
+datex<-c()
+long<-c()
+lat<-c()
+yfit<-c()
+for (j in c(1:length(sites))) {
+  site <- get(sites[j])
+  sitenum<-str_remove(sites[j],"site0")
+  sitenum<-str_remove(sitenum,"site")
+  loc <- subset(locdata, SITEID == sitenum)
+  for (k in c(1:length(site[,1]))) {
+    siteid <- append(siteid, sites[j])
+    datex <- append(datex, site[k, 4])
+    jitterx<-rnorm(1,0,0.1)
+    jittery<-rnorm(1,0,0.1)
+    long <- append(long, loc[1, 5]+jitterx)
+    lat <- append(lat, loc[1, 4]+jittery)
+    yf<-site[k,12]
+    if (yf == -9999){
+     yf<-NA
+    }
+    yfit<-append(yfit,yf)
+  }
+}
+mapdata<-data.frame(siteid,datex,long,lat,yfit)
+
+group<-c()
+for (i in c(1:length(mapdata[,1]))){
+  if (mapdata[i,3]>=24.833){
+    group<-append(group,"east")
+  }
+  else {
+    group<-append(group,"west")
+  }
+}
+chardata<-cbind(mapdata,group)
+
+breaks<-seq(10000,0,by=-200)
+
+all_proportions<-c()
+all_var<-c()
+east_proportions<-c()
+east_propneg5<-c()
+east_proppos5<-c()
+west_proportions<-c()
+west_propneg5<-c()
+west_proppos5<-c()
+for (i in c(1:(length(breaks)-1))){
+  chardata2<-subset(chardata,datex<breaks[i])
+  up_break<-breaks[i+1]
+  if (up_break==0){
+    up_break<-200
+  }
+  chardata2<-subset(chardata2,datex>=up_break)
+  chardataneg<-subset(chardata2,yfit<0)
+  chardataneg5<-subset(chardataneg,yfit<(-0.5))
+  chardatapos<-subset(chardata2,yfit>0)
+  chardatapos5<-subset(chardatapos,yfit>(0.5))
+  
+  all_proportions<-append(all_proportions,length(chardatapos[,1])/length(chardataneg[,1]))
+
+  
+  wchardataneg<-subset(chardataneg,group=="west")
+  wchardataneg5<-subset(chardataneg5,group=="west")
+  wchardatapos<-subset(chardatapos,group=="west")
+  wchardatapos5<-subset(chardatapos5,group=="west")
+  
+  west_proportions<-append(west_proportions,length(wchardatapos[,1])/length(wchardataneg[,1]))
+  west_propneg5<-append(west_propneg5,length(wchardataneg5[,1])/length(wchardataneg[,1]))
+  west_proppos5<-append(west_proppos5,length(wchardatapos5[,1])/length(wchardatapos[,1]))
+  
+  echardataneg<-subset(chardataneg,group=="east")
+  echardataneg5<-subset(chardataneg5,group=="east")
+  echardatapos<-subset(chardatapos,group=="east")
+  echardatapos5<-subset(chardatapos5,group=="east")
+  
+  east_proportions<-append(east_proportions,length(echardatapos[,1])/length(echardataneg[,1]))
+  east_propneg5<-append(east_propneg5,length(echardataneg5[,1])/length(echardataneg[,1]))
+  east_proppos5<-append(east_proppos5,length(echardatapos5[,1])/length(echardatapos[,1]))
+}
+breaks2<-breaks-100
+breaks2<-breaks2[1:50]
+hist(chardata$yfit,xlab="Z Anomaly",main="")
+palette(c("royalblue4","red4"))
+plot(chardata$datex,chardata$yfit,col=as.factor(chardata$group),ylab="Z Anomaly",xlab="Years BP")
+plot(breaks2,log(all_proportions[1:50]),ylim=c(-3,3),xlab="Years BP",ylab="Log Postive:Negative Z Anomaly",pch=16,col="white")
+points(breaks2,log(west_proportions[1:50]),pch=16,col="red4")
+points(breaks2,log(east_proportions[1:50]),pch=16,col="royalblue4")
+abline(h=0,lty=2)
+
+plot(breaks2,log(all_proportions[1:50]),ylim=c(0,1),xlab="Years BP",ylab="% Z Anomalies > 0.5",pch=16,col="white")
+points(breaks2,west_propneg5[1:50],pch=1,col="red4")
+points(breaks2,east_propneg5[1:50],pch=1,col="royalblue4")
+abline(h=0,lty=2)
+
+```
+
+
+#SI Figure 3: Moving average trendline
+```{r}
+png("SI_Fig3_MovingAv.png",width=7,height=6,units="in",res=800)
+par(mfrow=c(2,2))
+plot(closed_SPD$grid$calBP,allCorrect,type="l",ylim=c(0,0.7),ylab="Frequency",xlab="Years cal BP",main="All")
+moveav1<-rev(rollmean(allCorrect,500,na.pad=TRUE))
+lines(moveav1,col="orange",lty=1,lwd=2)
+
+plot(closed_srz_SPD$grid$calBP,srzCorrect,type="l",ylim=c(0,0.7),ylab="Frequency",xlab="Years cal BP",main="East (SRZ)")
+moveav2<-rev(rollmean(srzCorrect,500,na.pad=TRUE))
+lines(moveav2,col="orange",lty=1,lwd=2)
+
+plot(closed_cfr_SPD$grid$calBP,cfrCorrect,type="l",ylim=c(0,0.7),ylab="Frequency",xlab="Years cal BP",main="West (GCFR)")
+moveav3<-rev(rollmean(cfrCorrect,500,na.pad=TRUE))
+lines(moveav3,col="orange",lty=1,lwd=2)
+
+plot.new()
+legend("center",legend=c("SPD","500-year moving average"),lty=1,lwd=c(1,2),col=c("black","orange"),bty='n')
+dev.off()
+
+```
+
+
+#SI Figure 4: Comparison between uncalibrated and calibrated mean ages
+```{r}
+
+#All Southern Africa
+alldates<-subset(c14_sa,DATE<15000)
+alldates<-subset(alldates,DATE>50)
+curvesEtc<-getCurvesandOffsets(alldates,marineRes)
+caldates0<-rcarbon::calibrate(x=alldates$DATE,error=alldates$UNCERTAINT,ids=alldates$LAB_ID,dateDetails = alldates$SITE_CODE, calCurves = curvesEtc$curves,resOffsets=curvesEtc$deltaRs,resErrors=curvesEtc$deltaErr,normalised=FALSE,calMatrix = TRUE)
+all_uncal_meds<-caldates0$metadata$CRA
+all_cal_meds<-medCal(caldates0)
+uncals<-rep("Uncalibrated",length(all_uncal_meds))
+cals<-rep("Calibrated",length(all_uncal_meds))
+calibration<-append(uncals,cals)
+df1<-data.frame(calibration=factor(calibration),age=round(append(all_uncal_meds,all_cal_meds)))
+sp1<-ggplot(df1, aes(x=age, fill=calibration, color=calibration)) +
+  geom_histogram(position="identity", alpha=0.5,binwidth = 250)+
+  ggtitle("All")+
+  xlim(0,10000)+
+   theme_classic()+
+  theme(plot.title = element_text(hjust = 0.5))
+
+#East (SRZ)
+srz_dates<-subset(c14_srz,DATE<15000)
+srz_dates<-subset(srz_dates,DATE>50)
+srz_curvesEtc<-getCurvesandOffsets(srz_dates,marineRes)
+srz_caldates0<-rcarbon::calibrate(x=srz_dates$DATE,error=srz_dates$UNCERTAINT,ids=srz_dates$LAB_ID,dateDetails = srz_dates$SITE_CODE,calCurves = srz_curvesEtc$curves,resOffsets=srz_curvesEtc$deltaRs,resErrors=srz_curvesEtc$deltaErr,normalised=FALSE, calMatrix = TRUE)
+srz_uncal_meds<-srz_caldates0$metadata$CRA
+srz_cal_meds<-medCal(srz_caldates0)
+uncals<-rep("Uncalibrated",length(srz_uncal_meds))
+cals<-rep("Calibrated",length(srz_uncal_meds))
+calibration<-append(uncals,cals)
+df2<-data.frame(calibration=factor(calibration),age=round(append(srz_uncal_meds,srz_cal_meds)))
+sp2<-ggplot(df2, aes(x=age, fill=calibration, color=calibration)) +
+ geom_histogram(position="identity", alpha=0.5,binwidth = 250)+
+    ggtitle("East (SRZ)")+
+  xlim(0,10000)+
+  theme_classic()+
+   theme(plot.title = element_text(hjust = 0.5))
+
+#West (GCFR)
+cfr_dates<-subset(c14_cfr,DATE<15000)
+cfr_dates<-subset(cfr_dates,DATE>50)
+cfr_curvesEtc<-getCurvesandOffsets(cfr_dates,marineRes)
+cfr_caldates0<-rcarbon::calibrate(x=cfr_dates$DATE,error=cfr_dates$UNCERTAINT,ids=cfr_dates$LAB_ID,dateDetails = cfr_dates$SITE_CODE,calCurves = cfr_curvesEtc$curves,resOffsets=cfr_curvesEtc$deltaRs,resErrors=cfr_curvesEtc$deltaErr,normalised=FALSE, calMatrix = TRUE)
+cfr_uncal_meds<-cfr_caldates0$metadata$CRA
+cfr_cal_meds<-medCal(cfr_caldates0)
+uncals<-rep("Uncalibrated",length(cfr_uncal_meds))
+cals<-rep("Calibrated",length(cfr_uncal_meds))
+calibration<-append(uncals,cals)
+df3<-data.frame(calibration=factor(calibration),age=round(append(cfr_uncal_meds,cfr_cal_meds)))
+sp3<-ggplot(df3, aes(x=age, fill=calibration, color=calibration)) +
+  geom_histogram(position="identity", alpha=0.5,binwidth = 250)+
+  ggtitle("West (GCFR)")+
+  xlim(0,10000)+
+  theme_classic()+
+  theme(plot.title = element_text(hjust = 0.5))
+
+legend <- g_legend(sp1 + theme(legend.position='bottom'))
+
+png("SI_Fig4_UnCal.png",width=7,height=6,units="in",res=800)
+grid.arrange(sp1+theme(legend.position='hidden'), sp2+theme(legend.position='hidden'),
+             sp3+theme(legend.position='hidden'), legend)
+dev.off()
+
+```
+
+# SI Figure 5: Taphonomic correction
+```{r}
+all_open_correct<-transformSPD(open_SPD,correction = expression(PrDens/(21149.57 * (CalBP + 1788.03)^-1.26)))
+allCorrect<-(all_open_correct$grid$PrDens+closed_SPD$grid$PrDens)
+srz_open_correct<-transformSPD(open_srz_SPD,correction = expression(PrDens/(21149.57 * (CalBP + 1788.03)^-1.26)))
+srzCorrect<-(srz_open_correct$grid$PrDens+closed_srz_SPD$grid$PrDens)
+cfr_open_correct<-transformSPD(open_cfr_SPD,correction = expression(PrDens/(21149.57 * (CalBP + 1788.03)^-1.26)))
+cfrCorrect<-(cfr_open_correct$grid$PrDens+closed_cfr_SPD$grid$PrDens)
+
+png("SI_Fig5_TaphCorrect.png",width=7,height=6,units="in",res=800)
+par(mfrow=c(2,2))
+plot(closed_SPD$grid$calBP,allCorrect,type="l",ylim=c(0,0.7),ylab="Frequency",xlab="Years cal BP",main="All")
+lines(closed_SPD$grid$calBP,allSPD$grid$PrDens,col="red4",lty=3)
+
+
+plot(closed_srz_SPD$grid$calBP,srzCorrect,type="l",ylim=c(0,0.7),ylab="Frequency",xlab="Years cal BP",main="East (SRZ)")
+lines(closed_srz_SPD$grid$calBP,srz_SPD$grid$PrDens,col="red4",lty=3)
+
+plot(closed_cfr_SPD$grid$calBP,cfrCorrect,type="l",ylim=c(0,0.7),ylab="Frequency",xlab="Years cal BP",main="West (GCFR)")
+lines(closed_cfr_SPD$grid$calBP,cfr_SPD$grid$PrDens,col="red4",lty=3)
+plot.new()
+legend("center",legend=c("Uncorrected","Corrected"),lty=c(3,1),col=c("red4","black"),bty='n')
+dev.off()
+```
+
+
+
+
